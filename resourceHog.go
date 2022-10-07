@@ -2,11 +2,15 @@ package main
 
 import (
 	"fmt"
+	"github.com/docker/go-units"
+	"github.com/gorilla/handlers"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
@@ -16,33 +20,59 @@ type Server struct {
 }
 
 type Hog struct {
-	CPU          string
-	RAM          string
-	Time         string
-	Network      string
-	DiskWrite    string
-	DiskRead     string
-	ResponseSize string
+	CPU          int64
+	RAM          int64
+	Time         time.Duration
+	Network      int64
+	DiskWrite    int64
+	DiskRead     int64
+	ResponseSize int64
+}
+
+func FromHumanSize(s string) int64 {
+	v, err := units.FromHumanSize(s)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+func ParseDuration(s string) time.Duration {
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		panic(err)
+	}
+	return v
 }
 
 func HogFromQuery(query url.Values) *Hog {
 	hog := Hog{
-		CPU:          query.Get("cpu"),
-		RAM:          query.Get("ram"),
-		Time:         query.Get("time"),
-		Network:      query.Get("network"),
-		DiskWrite:    query.Get("disk_write"),
-		DiskRead:     query.Get("disk_read"),
-		ResponseSize: query.Get("response_size"),
+		CPU:          FromHumanSize(query.Get("cpu")),
+		RAM:          FromHumanSize(query.Get("ram")),
+		Time:         ParseDuration(query.Get("time")),
+		Network:      FromHumanSize(query.Get("network")),
+		DiskWrite:    FromHumanSize(query.Get("disk_write")),
+		DiskRead:     FromHumanSize(query.Get("disk_read")),
+		ResponseSize: FromHumanSize(query.Get("response_size")),
 	}
 
 	return &hog
+}
+
+func (h *Hog) Respond(w http.ResponseWriter) {
+	wg := sync.WaitGroup{}
+
+	if h.ResponseSize > 0 {
+
+	}
 }
 
 func (s *Server) HogHandler(w http.ResponseWriter, r *http.Request) {
 	h := HogFromQuery(r.URL.Query())
 
 	fmt.Printf("%#v\n", h)
+
+	h.Respond(w)
 }
 
 func New() (*Server, error) {
@@ -75,7 +105,7 @@ func (s *Server) Serve() {
 	m.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./serve/static"))))
 	m.Path("/hog").HandlerFunc(s.HogHandler)
 
-	if err := http.ListenAndServe(":6776", m); err != nil {
+	if err := http.ListenAndServe(":6776", handlers.RecoveryHandler()(m)); err != nil {
 		logrus.Fatal(err)
 	}
 }
