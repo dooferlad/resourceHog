@@ -85,7 +85,6 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 
 	if h.Time > 0 {
 		t := time.After(h.Time)
-		debug.SetMemoryLimit(100 * 1024 * 1024)
 
 		if h.CPU > 0 {
 			wg.Add(1)
@@ -166,6 +165,11 @@ func New() (*Server, error) {
 		s.cleanup()
 		os.Exit(1)
 	}()
+
+	// When using the memory hog we can allocate a lot of memory that isn't quickly cleaned up unless there is pressure
+	// to do so. This sets a soft memory limit for the GC of 100MiB, which causes it to rapidly reclaim memory. The
+	// call requires Gi 1.9+
+	debug.SetMemoryLimit(100 * 1024 * 1024)
 
 	logrus.Info("Ready")
 	return &s, nil
