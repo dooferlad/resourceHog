@@ -74,7 +74,9 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 		b := []byte{0}
 
 		for remaining := h.ResponseSize; remaining > 0; remaining-- {
-			w.Write(b)
+			if _, err := w.Write(b); err != nil {
+				panic(err)
+			}
 		}
 	}
 }
