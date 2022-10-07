@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/docker/go-units"
 	"github.com/gorilla/handlers"
@@ -84,37 +85,58 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 	}
 
 	if h.Time > 0 {
-		t := time.After(h.Time)
+		ctx, cancel := context.WithTimeout(context.Background(), h.Time)
+		defer cancel() // to avoid resource leeks - normally we call cancel inside a specific hog termination loop
 
 		if h.CPU > 0 {
 			wg.Add(1)
 			logrus.Infof("Using %d CPUs for %v seconds", h.CPU, h.Time)
 
 			rc := make(chan uint64, 1)
-			go func() {
-				s := uint64(123456)
-				a := uint64(25214903917)
-				c := uint64(11)
-				m := uint64(1) << 48
+			for i := 0; i < int(h.CPU); i++ {
+				logrus.Info("Creating CPU hog")
+				go func() {
+					// Generate random numbers. https://en.wikipedia.org/wiki/Linear_congruential_generator
+					s := uint64(123456)
+					a := uint64(25214903917)
+					c := uint64(11)
+					m := uint64(1) << 48
 
-				for {
-					s = (a*s + c) % m
-					rc <- s
-				}
-			}()
+					for {
+						// Need to generate a lot of random numbers before letting a chance of a thread/goroutine switch
+						// to really tie up a CPU, so only let a switch happen on a reasonably long timer
+						sendTime := time.Now().Add(time.Millisecond * 10)
+						for {
+
+							if time.Now().After(sendTime) {
+								break
+							}
+						}
+
+						s = (a*s + c) % m
+
+						select {
+						case rc <- s:
+							// We send numbers somewhere so the compiler doesn't optimise away our RNG.
+						case <-ctx.Done():
+							logrus.Info("... Terminating CPU hog")
+							return
+						}
+					}
+				}()
+			}
 
 			go func() {
 				for {
 					select {
-					case <-t:
+					case <-ctx.Done():
 						wg.Done()
 						return
-
 					case <-rc:
-
 					}
 				}
 			}()
+
 		}
 
 		if h.RAM > 0 {
@@ -129,9 +151,8 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 				logrus.Infof("Allocated %d RAM", len(x))
 				for {
 					select {
-					case <-t:
+					case <-ctx.Done():
 						wg.Done()
-						x = nil
 						return
 					}
 				}
@@ -182,10 +203,8 @@ func (s *Server) cleanup() {
 }
 
 func (s *Server) Serve() {
-
 	m := mux.NewRouter()
-	m.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./serve/static"))))
-	m.Path("/hog").HandlerFunc(s.HogHandler)
+	m.Path("/").HandlerFunc(s.HogHandler)
 
 	if err := http.ListenAndServe(":6776", handlers.RecoveryHandler()(m)); err != nil {
 		logrus.Fatal(err)
