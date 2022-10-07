@@ -71,14 +71,53 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 	if h.ResponseSize > 0 {
 		wg.Add(1)
 
-		b := []byte{0}
+		go func() {
+			b := []byte{0}
 
-		for remaining := h.ResponseSize; remaining > 0; remaining-- {
-			if _, err := w.Write(b); err != nil {
-				panic(err)
+			for remaining := h.ResponseSize; remaining > 0; remaining-- {
+				_, _ = w.Write(b)
 			}
-		}
+
+			wg.Done()
+		}()
+
 	}
+
+	if h.CPU > 0 && h.Time > 0 {
+		wg.Add(1)
+		logrus.Infof("Using %d CPUs for %v seconds", h.CPU, h.Time)
+
+		rc := make(chan uint64, 1)
+		go func() {
+			s := uint64(123456)
+			a := uint64(25214903917)
+			c := uint64(11)
+			m := uint64(1) << 48
+
+			for {
+				s = (a*s + c) % m
+				rc <- s
+			}
+		}()
+
+		go func() {
+			t := time.After(h.Time)
+			for {
+				select {
+				case <-t:
+					wg.Done()
+					return
+
+				case <-rc:
+
+				}
+			}
+		}()
+
+	}
+
+	wg.Wait()
+	logrus.Info("Done responding")
 }
 
 func (s *Server) HogHandler(w http.ResponseWriter, r *http.Request) {
