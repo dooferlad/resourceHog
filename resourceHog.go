@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -80,40 +81,64 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 
 			wg.Done()
 		}()
-
 	}
 
-	if h.CPU > 0 && h.Time > 0 {
-		wg.Add(1)
-		logrus.Infof("Using %d CPUs for %v seconds", h.CPU, h.Time)
+	if h.Time > 0 {
+		t := time.After(h.Time)
+		debug.SetMemoryLimit(100 * 1024 * 1024)
 
-		rc := make(chan uint64, 1)
-		go func() {
-			s := uint64(123456)
-			a := uint64(25214903917)
-			c := uint64(11)
-			m := uint64(1) << 48
+		if h.CPU > 0 {
+			wg.Add(1)
+			logrus.Infof("Using %d CPUs for %v seconds", h.CPU, h.Time)
 
-			for {
-				s = (a*s + c) % m
-				rc <- s
-			}
-		}()
+			rc := make(chan uint64, 1)
+			go func() {
+				s := uint64(123456)
+				a := uint64(25214903917)
+				c := uint64(11)
+				m := uint64(1) << 48
 
-		go func() {
-			t := time.After(h.Time)
-			for {
-				select {
-				case <-t:
-					wg.Done()
-					return
-
-				case <-rc:
-
+				for {
+					s = (a*s + c) % m
+					rc <- s
 				}
-			}
-		}()
+			}()
 
+			go func() {
+				for {
+					select {
+					case <-t:
+						wg.Done()
+						return
+
+					case <-rc:
+
+					}
+				}
+			}()
+		}
+
+		if h.RAM > 0 {
+			wg.Add(1)
+			logrus.Infof("Using %d RAM for %v seconds", h.RAM, h.Time)
+
+			go func() {
+				x := make([]byte, h.RAM)
+				for i := int64(0); i < h.RAM; i++ {
+					x[i] = byte(i)
+				}
+				logrus.Infof("Allocated %d RAM", len(x))
+				for {
+					select {
+					case <-t:
+						wg.Done()
+						x = nil
+						return
+					}
+				}
+
+			}()
+		}
 	}
 
 	wg.Wait()
