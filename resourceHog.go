@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/docker/go-units"
 	"github.com/gorilla/handlers"
@@ -158,6 +159,57 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 				}
 
 			}()
+		}
+	}
+
+	if h.DiskRead > 0 {
+		const fileName = "resourceHogReadFile"
+		buf := make([]byte, 1024*1024)
+
+		stat, err := os.Stat(fileName)
+		if errors.Is(err, os.ErrNotExist) || stat.Size() < h.DiskRead {
+			// Our standard file to read doesn't exist, so write it first
+			if f, err := os.Create(fileName); err != nil {
+				panic(err)
+			} else {
+				for bytesRemaining := h.DiskRead; bytesRemaining > 0; {
+					// Update size if needed to not over-write
+					if len(buf) > int(bytesRemaining) {
+						buf = buf[:bytesRemaining]
+					}
+
+					if _, err = f.Write(buf); err != nil {
+						panic(err)
+					}
+
+					bytesRemaining -= int64(len(buf))
+				}
+
+				if err = f.Close(); err != nil {
+					panic(err)
+				}
+			}
+		}
+
+		f, err := os.Open(fileName)
+		defer f.Close()
+		if err != nil {
+			panic(err)
+		}
+
+		for bytesRemaining := h.DiskRead; bytesRemaining > 0; {
+			// Update size if needed to not over-read
+			if len(buf) > int(bytesRemaining) {
+				buf = buf[:bytesRemaining]
+			}
+
+			readBytes, err := f.Read(buf)
+
+			if err != nil {
+				panic(err)
+			}
+
+			bytesRemaining -= int64(readBytes)
 		}
 	}
 
