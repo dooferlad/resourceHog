@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"github.com/docker/go-units"
 	"github.com/gorilla/handlers"
@@ -54,6 +53,109 @@ func ParseDuration(s string) time.Duration {
 	return v
 }
 
+func WriteFileOfSize(name string, size int64) error {
+	buf := make([]byte, 1024*1024)
+
+	if f, err := os.Create(name); err != nil {
+		return err
+	} else {
+		for bytesRemaining := size; bytesRemaining > 0; {
+			// Update size if needed to not over-write
+			if len(buf) > int(bytesRemaining) {
+				buf = buf[:bytesRemaining]
+			}
+
+			if _, err = f.Write(buf); err != nil {
+				return err
+			}
+
+			bytesRemaining -= int64(len(buf))
+		}
+
+		if err = f.Close(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func ReadFileOfSize(name string, size int64) error {
+	buf := make([]byte, 1024*1024)
+
+	f, err := os.Open(name)
+	defer f.Close()
+	if err != nil {
+		return err
+	}
+
+	for bytesRemaining := size; bytesRemaining > 0; {
+		// Update size if needed to not over-read
+		if len(buf) > int(bytesRemaining) {
+			buf = buf[:bytesRemaining]
+		}
+
+		readBytes, err := f.Read(buf)
+
+		if err != nil {
+			return err
+		}
+
+		bytesRemaining -= int64(readBytes)
+	}
+
+	return nil
+}
+
+func CPUHog(ctx context.Context, rc chan uint64) {
+	// Generate random numbers. https://en.wikipedia.org/wiki/Linear_congruential_generator
+	s := uint64(123456)
+	a := uint64(25214903917)
+	c := uint64(11)
+	m := uint64(1) << 48
+
+	for {
+		// Need to generate a lot of random numbers before letting a chance of a thread/goroutine switch
+		// to really tie up a CPU, so only let a switch happen on a reasonably long timer
+		sendTime := time.Now().Add(time.Millisecond * 10)
+		for {
+			if time.Now().After(sendTime) {
+				break
+			}
+		}
+
+		s = (a*s + c) % m
+
+		select {
+		case rc <- s:
+			// We send numbers somewhere so the compiler doesn't optimise away our RNG.
+		case <-ctx.Done():
+			logrus.Info("... Terminating CPU hog")
+			return
+		}
+
+		select {
+		case <-rc:
+		}
+	}
+}
+
+func RAMHog(ctx context.Context, size int64) {
+	x := make([]byte, size)
+	for i := int64(0); i < size; i++ {
+		x[i] = byte(i)
+	}
+	logrus.Infof("Allocated %d RAM", len(x))
+	<-ctx.Done()
+	logrus.Infof("... Terminating RAM hog %v", len(x))
+	for i := int64(0); i < size; i++ {
+		if x[i] != byte(i) {
+			panic("what the heck!")
+		}
+	}
+	x = make([]byte, 100)
+}
+
 func HogFromQuery(query url.Values) *Hog {
 	hog := Hog{
 		CPU:          FromHumanSize(query.Get("cpu")),
@@ -87,130 +189,50 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 
 	if h.Time > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), h.Time)
+		rc := make(chan uint64, 100)
 		defer cancel() // to avoid resource leeks - normally we call cancel inside a specific hog termination loop
 
 		if h.CPU > 0 {
-			wg.Add(1)
 			logrus.Infof("Using %d CPUs for %v seconds", h.CPU, h.Time)
-
-			rc := make(chan uint64, 1)
 			for i := 0; i < int(h.CPU); i++ {
 				logrus.Info("Creating CPU hog")
-				go func() {
-					// Generate random numbers. https://en.wikipedia.org/wiki/Linear_congruential_generator
-					s := uint64(123456)
-					a := uint64(25214903917)
-					c := uint64(11)
-					m := uint64(1) << 48
-
-					for {
-						// Need to generate a lot of random numbers before letting a chance of a thread/goroutine switch
-						// to really tie up a CPU, so only let a switch happen on a reasonably long timer
-						sendTime := time.Now().Add(time.Millisecond * 10)
-						for {
-
-							if time.Now().After(sendTime) {
-								break
-							}
-						}
-
-						s = (a*s + c) % m
-
-						select {
-						case rc <- s:
-							// We send numbers somewhere so the compiler doesn't optimise away our RNG.
-						case <-ctx.Done():
-							logrus.Info("... Terminating CPU hog")
-							return
-						}
-					}
-				}()
+				go CPUHog(ctx, rc)
 			}
-
-			go func() {
-				for {
-					select {
-					case <-ctx.Done():
-						wg.Done()
-						return
-					case <-rc:
-					}
-				}
-			}()
-
 		}
 
 		if h.RAM > 0 {
-			wg.Add(1)
 			logrus.Infof("Using %d RAM for %v seconds", h.RAM, h.Time)
-
-			go func() {
-				x := make([]byte, h.RAM)
-				for i := int64(0); i < h.RAM; i++ {
-					x[i] = byte(i)
-				}
-				logrus.Infof("Allocated %d RAM", len(x))
-				for {
-					select {
-					case <-ctx.Done():
-						wg.Done()
-						return
-					}
-				}
-
-			}()
+			go RAMHog(ctx, h.RAM)
 		}
+
+		<-ctx.Done()
 	}
 
 	if h.DiskRead > 0 {
-		const fileName = "resourceHogReadFile"
-		buf := make([]byte, 1024*1024)
-
-		stat, err := os.Stat(fileName)
-		if errors.Is(err, os.ErrNotExist) || stat.Size() < h.DiskRead {
-			// Our standard file to read doesn't exist, so write it first
-			if f, err := os.Create(fileName); err != nil {
-				panic(err)
-			} else {
-				for bytesRemaining := h.DiskRead; bytesRemaining > 0; {
-					// Update size if needed to not over-write
-					if len(buf) > int(bytesRemaining) {
-						buf = buf[:bytesRemaining]
-					}
-
-					if _, err = f.Write(buf); err != nil {
-						panic(err)
-					}
-
-					bytesRemaining -= int64(len(buf))
-				}
-
-				if err = f.Close(); err != nil {
-					panic(err)
-				}
-			}
-		}
-
-		f, err := os.Open(fileName)
-		defer f.Close()
-		if err != nil {
-			panic(err)
-		}
-
-		for bytesRemaining := h.DiskRead; bytesRemaining > 0; {
-			// Update size if needed to not over-read
-			if len(buf) > int(bytesRemaining) {
-				buf = buf[:bytesRemaining]
-			}
-
-			readBytes, err := f.Read(buf)
-
+		wg.Add(1)
+		go func() {
+			const fileName = "resourceHogReadFile"
+			err := WriteFileOfSize(fileName, h.DiskRead)
 			if err != nil {
 				panic(err)
 			}
+			err = ReadFileOfSize(fileName, h.DiskRead)
+			if err != nil {
+				panic(err)
+			}
+			wg.Done()
+		}()
+	}
 
-			bytesRemaining -= int64(readBytes)
-		}
+	if h.DiskWrite > 0 {
+		wg.Add(1)
+		go func() {
+			err := WriteFileOfSize("resourceHogWriteFile", h.DiskWrite)
+			if err != nil {
+				panic(err)
+			}
+			wg.Done()
+		}()
 	}
 
 	wg.Wait()
