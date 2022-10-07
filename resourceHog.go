@@ -30,6 +30,9 @@ type Hog struct {
 }
 
 func FromHumanSize(s string) int64 {
+	if s == "" {
+		return 0
+	}
 	v, err := units.FromHumanSize(s)
 	if err != nil {
 		panic(err)
@@ -38,6 +41,9 @@ func FromHumanSize(s string) int64 {
 }
 
 func ParseDuration(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
 	v, err := time.ParseDuration(s)
 	if err != nil {
 		panic(err)
@@ -63,7 +69,13 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 	wg := sync.WaitGroup{}
 
 	if h.ResponseSize > 0 {
+		wg.Add(1)
 
+		b := []byte{0}
+
+		for remaining := h.ResponseSize; remaining > 0; remaining-- {
+			w.Write(b)
+		}
 	}
 }
 
