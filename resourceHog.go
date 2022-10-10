@@ -140,22 +140,6 @@ func CPUHog(ctx context.Context, rc chan uint64) {
 	}
 }
 
-func RAMHog(ctx context.Context, size int64) {
-	x := make([]byte, size)
-	for i := int64(0); i < size; i++ {
-		x[i] = byte(i)
-	}
-	logrus.Infof("Allocated %d RAM", len(x))
-	<-ctx.Done()
-	logrus.Infof("... Terminating RAM hog %v", len(x))
-	for i := int64(0); i < size; i++ {
-		if x[i] != byte(i) {
-			panic("what the heck!")
-		}
-	}
-	x = make([]byte, 100)
-}
-
 func HogFromQuery(query url.Values) *Hog {
 	hog := Hog{
 		CPU:          FromHumanSize(query.Get("cpu")),
@@ -202,7 +186,16 @@ func (h *Hog) Respond(w http.ResponseWriter) {
 
 		if h.RAM > 0 {
 			logrus.Infof("Using %d RAM for %v seconds", h.RAM, h.Time)
-			go RAMHog(ctx, h.RAM)
+
+			// Putting this in a function gives the compiler the bright idea to compile it away, which we don't
+			// want, so don't be tempted. If this stops working, turn to cgo :-(
+			x := make([]byte, h.RAM)
+			for i := int64(0); i < h.RAM; i++ {
+				x[i] = byte(i)
+				if x[i] != byte(i) {
+					panic("what the heck!")
+				}
+			}
 		}
 
 		<-ctx.Done()
