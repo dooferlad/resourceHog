@@ -145,7 +145,6 @@ func HogFromQuery(query url.Values) *Hog {
 		CPU:          FromHumanSize(query.Get("cpu")),
 		RAM:          FromHumanSize(query.Get("ram")),
 		Time:         ParseDuration(query.Get("time")),
-		Network:      FromHumanSize(query.Get("network")),
 		DiskWrite:    FromHumanSize(query.Get("disk_write")),
 		DiskRead:     FromHumanSize(query.Get("disk_read")),
 		ResponseSize: FromHumanSize(query.Get("response_size")),
